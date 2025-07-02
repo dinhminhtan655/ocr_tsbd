@@ -329,23 +329,37 @@ async def extract_info(files: List[UploadFile] = File(...), prompt: str = Form(.
     response = model.chat(tokenizer, combined_pixel_values, question, generation_config)
     print(f"Model trả về: {response}")
 
+    # THAY THẾ BẰNG ĐOẠN CODE NÀY
     try:
-        # Cố gắng tìm và parse cả mảng JSON hoặc object JSON
-        first_char = response.find('[')
-        if first_char == -1:
-            first_char = response.find('{')
+        # Tìm vị trí bắt đầu của JSON (hoặc là mảng `[` hoặc là object `{`)
+        start_bracket = response.find('[')
+        start_curly = response.find('{')
         
-        last_char_obj = response.rfind('}')
-        last_char_arr = response.rfind(']')
-
-        last_char = max(last_char_obj, last_char_arr)
-
-        if first_char != -1 and last_char != -1:
-            json_str = response[first_char : last_char+1]
-            json_response = json.loads(json_str)
-            return json_response
+        # Xác định vị trí bắt đầu thực sự, ưu tiên cái nào xuất hiện trước
+        if start_bracket != -1 and (start_curly == -1 or start_bracket < start_curly):
+            start_index = start_bracket
+            end_char = ']'
         else:
-            raise ValueError("Không tìm thấy JSON hợp lệ trong response")
+            start_index = start_curly
+            end_char = '}'
+
+        # Nếu không tìm thấy ký tự bắt đầu, báo lỗi
+        if start_index == -1:
+            raise ValueError("Không tìm thấy ký tự bắt đầu JSON ('{' hoặc '[')")
+
+        # Tìm vị trí kết thúc tương ứng (tìm từ cuối chuỗi)
+        end_index = response.rfind(end_char)
+
+        # Nếu không tìm thấy ký tự kết thúc hợp lệ, báo lỗi
+        if end_index == -1 or end_index < start_index:
+            raise ValueError(f"Không tìm thấy ký tự kết thúc JSON ('{end_char}') hợp lệ")
+
+        # Cắt ra chuỗi JSON sạch
+        json_str = response[start_index : end_index + 1]
+        
+        # Parse chuỗi JSON đã được cắt
+        json_response = json.loads(json_str)
+        return json_response
             
     except Exception as e:
         print(f"Không thể parse JSON từ response của model. Lỗi: {e}")
