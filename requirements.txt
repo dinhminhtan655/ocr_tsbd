@@ -7,6 +7,6 @@ accelerate
 fastapi
 uvicorn[standard]
 python-multipart
-eniops
+einops
 timm
 gunicorn
