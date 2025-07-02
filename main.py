@@ -183,6 +183,7 @@ from torchvision.transforms.functional import InterpolationMode
 from transformers import AutoModel, AutoTokenizer
 import io
 import json
+import time # <-- Thêm thư viện time
 
 # --- Thư viện cho API ---
 from fastapi import FastAPI, File, HTTPException, UploadFile, Form
@@ -264,8 +265,6 @@ def process_image_to_tensor(image_obj, input_size=448, max_num=12):
 
 app = FastAPI(title="Sổ Hồng OCR API", description="API để trích xuất thông tin từ ảnh sổ hồng.")
 
-# --- THAY ĐỔI QUAN TRỌNG: Cập nhật logic chọn Device ---
-# Ưu tiên CUDA > MPS (cho Mac) > CPU
 if torch.cuda.is_available():
     device = torch.device("cuda")
     print("✅ Đã phát hiện và đang sử dụng GPU NVIDIA (CUDA).")
@@ -276,93 +275,78 @@ else:
     device = torch.device("cpu")
     print("⚠️ Không tìm thấy GPU, đang sử dụng CPU. Quá trình xử lý sẽ rất chậm.")
 
-
 model_name = "5CD-AI/Vintern-1B-v3_5"
 print("Đang tải model...")
-# Tải model và chuyển nó đến device đã chọn (cuda, mps hoặc cpu)
-try:
-  model = AutoModel.from_pretrained(
-      model_name,
-      torch_dtype=torch.bfloat16,
-      low_cpu_mem_usage=True,
-      trust_remote_code=True,
-      use_flash_attn=False,
-  ).eval().to(device)
-except Exception:
-  model = AutoModel.from_pretrained(
-      model_name,
-      torch_dtype=torch.bfloat16,
-      low_cpu_mem_usage=True,
-      trust_remote_code=True
-  ).eval().to(device)
-
+model = AutoModel.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
+    low_cpu_mem_usage=True,
+    trust_remote_code=True
+).eval().to(device)
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, use_fast=False)
 print("Model đã tải xong.")
 
-# --- Định nghĩa API Endpoint ---
+# --- Định nghĩa API Endpoint với log gỡ lỗi ---
 @app.post("/extract-land-title-info/")
 async def extract_info(files: List[UploadFile] = File(...), prompt: str = Form(...)):
-    """
-    Nhận một DANH SÁCH file ảnh và một chuỗi prompt, xử lý và trả về thông tin.
-    """
+    start_time = time.time()
+    print(f"\n{'='*20} BẮT ĐẦU REQUEST MỚI {'='*20}")
+    print(f"DEBUG {time.time() - start_time:.2f}s: Bước 1 - Nhận được {len(files)} file(s).")
+    
     if not files:
         raise HTTPException(status_code=400, detail="No files sent.")
-
-    print(f"Nhận được {len(files)} file(s).")
     
     list_of_pixel_values = []
+    
+    # Bắt đầu vòng lặp xử lý ảnh
+    print(f"DEBUG {time.time() - start_time:.2f}s: Bước 2 - Bắt đầu vòng lặp tiền xử lý ảnh.")
     for file in files:
-        print(f"Đang xử lý file: {file.filename}")
+        print(f"DEBUG {time.time() - start_time:.2f}s:   Bước 2.1 - Đang xử lý file: {file.filename}")
+        
         contents = await file.read()
+        print(f"DEBUG {time.time() - start_time:.2f}s:   Bước 2.2 - Đã đọc {len(contents)} bytes từ file.")
+
         image = Image.open(io.BytesIO(contents))
+        print(f"DEBUG {time.time() - start_time:.2f}s:   Bước 2.3 - Đã mở ảnh bằng PIL.")
+        
         pixel_values_single_image = process_image_to_tensor(image, max_num=6)
         list_of_pixel_values.append(pixel_values_single_image)
+        print(f"DEBUG {time.time() - start_time:.2f}s:   Bước 2.4 - Đã xử lý ảnh thành tensor.")
 
+    print(f"DEBUG {time.time() - start_time:.2f}s: Bước 3 - Hoàn thành vòng lặp. Bắt đầu gộp tensor.")
     combined_pixel_values = torch.cat(list_of_pixel_values, dim=0).to(torch.bfloat16).to(device)
-    
-    print(f"Đã gộp các ảnh, tổng số tensor patches: {combined_pixel_values.shape[0]}")
+    print(f"DEBUG {time.time() - start_time:.2f}s: Bước 4 - Đã gộp các ảnh và chuyển sang GPU. Tổng số patches: {combined_pixel_values.shape[0]}")
     
     question = prompt
     generation_config = dict(max_new_tokens=2048, do_sample=False, num_beams=3, repetition_penalty=3.5)
 
-    print("Bắt đầu xử lý với model...")
+    print(f"DEBUG {time.time() - start_time:.2f}s: Bước 5 - Bắt đầu xử lý với model.chat()...")
     response = model.chat(tokenizer, combined_pixel_values, question, generation_config)
+    print(f"DEBUG {time.time() - start_time:.2f}s: Bước 6 - Model đã trả về response.")
+    
     print(f"Model trả về: {response}")
 
-    # THAY THẾ BẰNG ĐOẠN CODE NÀY
+    print(f"DEBUG {time.time() - start_time:.2f}s: Bước 7 - Bắt đầu parse JSON.")
     try:
-        # Tìm vị trí bắt đầu của JSON (hoặc là mảng `[` hoặc là object `{`)
+        # ... (Khối code parse JSON giữ nguyên như cũ) ...
         start_bracket = response.find('[')
         start_curly = response.find('{')
-        
-        # Xác định vị trí bắt đầu thực sự, ưu tiên cái nào xuất hiện trước
         if start_bracket != -1 and (start_curly == -1 or start_bracket < start_curly):
             start_index = start_bracket
             end_char = ']'
         else:
             start_index = start_curly
             end_char = '}'
-
-        # Nếu không tìm thấy ký tự bắt đầu, báo lỗi
-        if start_index == -1:
-            raise ValueError("Không tìm thấy ký tự bắt đầu JSON ('{' hoặc '[')")
-
-        # Tìm vị trí kết thúc tương ứng (tìm từ cuối chuỗi)
+        if start_index == -1: raise ValueError("Không tìm thấy ký tự bắt đầu JSON")
         end_index = response.rfind(end_char)
-
-        # Nếu không tìm thấy ký tự kết thúc hợp lệ, báo lỗi
-        if end_index == -1 or end_index < start_index:
-            raise ValueError(f"Không tìm thấy ký tự kết thúc JSON ('{end_char}') hợp lệ")
-
-        # Cắt ra chuỗi JSON sạch
+        if end_index == -1 or end_index < start_index: raise ValueError("Không tìm thấy ký tự kết thúc JSON")
         json_str = response[start_index : end_index + 1]
-        
-        # Parse chuỗi JSON đã được cắt
         json_response = json.loads(json_str)
+        print(f"DEBUG {time.time() - start_time:.2f}s: Bước 8 - Parse JSON thành công. Hoàn tất request.")
         return json_response
             
     except Exception as e:
-        print(f"Không thể parse JSON từ response của model. Lỗi: {e}")
+        print(f"DEBUG {time.time() - start_time:.2f}s: Bước 8 FAILED - Không thể parse JSON. Lỗi: {e}")
         return {"error": "Could not parse model response to JSON", "raw_response": response}
 
 if __name__ == "__main__":
