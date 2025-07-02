@@ -1,0 +1,12 @@
+torch
+torchvision
+transformers
+Pillow
+numpy
+accelerate
+fastapi
+uvicorn[standard]
+python-multipart
+eniops
+timm
+gunicorn
